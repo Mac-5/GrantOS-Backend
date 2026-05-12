@@ -6,7 +6,7 @@ dist/
 build/
 .next/
 out/
- 
+scratch/ 
 # Env files
 .env
 .env.*
