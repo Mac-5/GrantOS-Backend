@@ -1,0 +1,18 @@
+version: "3.8"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: grantos_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: grantos
+      POSTGRES_PASSWORD: grantos_secret_2025
+      POSTGRES_DB: grantos_service
+    ports:
+      - "5433:5432"
+    volumes:
+      - grantos_pgdata:/var/lib/postgresql/data
+
+volumes:
+  grantos_pgdata:
