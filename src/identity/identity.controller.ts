@@ -180,6 +180,21 @@ export class IdentityController {
     return this.identityService.getStatus(requestId);
   }
 
+  // ── GET /identity/verified/:address ──────────────────────────────────────
+
+  @Get('identity/verified/:address')
+  @ApiOperation({
+    summary: 'Check if a wallet address is already ZK verified',
+    description: 'Returns { verified: true } if the wallet has a completed verification, { verified: false } otherwise.',
+  })
+  @ApiParam({ name: 'address', description: 'Ethereum wallet address' })
+  @ApiResponse({ status: 200, schema: { example: { verified: true } } })
+  async isWalletVerified(
+    @Param('address') address: string,
+  ): Promise<{ verified: boolean }> {
+    return this.identityService.isWalletVerified(address);
+  }
+
   // ── POST /identity/zk/verify ───────────────────────────────────────────────
 
   @Post('identity/zk/verify')

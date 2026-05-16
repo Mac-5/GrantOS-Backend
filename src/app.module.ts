@@ -6,6 +6,9 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { validate } from './config/env.validation';
 import { IdentityModule } from './identity/identity.module';
 import { WebProof } from './identity/entities/web-proof.entity';
+import { GrantModule } from './grant/grant.module';
+import { Grant } from './grant/entities/grant.entity';
+import { MilestoneSubmission } from './grant/entities/milestone-submission.entity';
 
 @Module({
   imports: [
@@ -28,7 +31,7 @@ import { WebProof } from './identity/entities/web-proof.entity';
         username: config.getOrThrow<string>('DB_USERNAME'),
         password: config.getOrThrow<string>('DB_PASSWORD'),
         database: config.getOrThrow<string>('DB_NAME'),
-        entities: [WebProof],
+        entities: [WebProof, Grant, MilestoneSubmission],
         synchronize: config.get<boolean>('DB_SYNCHRONIZE') ?? false,
         logging: config.get<string>('NODE_ENV') === 'development',
         ssl:
@@ -41,6 +44,7 @@ import { WebProof } from './identity/entities/web-proof.entity';
 
     // ── Feature modules ───────────────────────────────────────────────────────
     IdentityModule,
+    GrantModule,
   ],
 })
 export class AppModule {}
