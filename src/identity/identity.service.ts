@@ -366,6 +366,13 @@ export class IdentityService {
     };
   }
 
+  async isWalletVerified(address: string): Promise<{ verified: boolean }> {
+    const record = await this.webProofRepo.findOne({
+      where: { walletAddress: address.toLowerCase(), status: ProofStatus.VERIFIED },
+    });
+    return { verified: !!record };
+  }
+
   // ── ZK Proof Verification (server-side) ───────────────────────────────────
 
   async verifyZkProof(
