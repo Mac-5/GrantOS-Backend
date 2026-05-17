@@ -9,6 +9,7 @@ import { WebProof } from './identity/entities/web-proof.entity';
 import { GrantModule } from './grant/grant.module';
 import { Grant } from './grant/entities/grant.entity';
 import { MilestoneSubmission } from './grant/entities/milestone-submission.entity';
+import { MilestoneWarning } from './grant/entities/milestone-warning.entity';
 
 @Module({
   imports: [
@@ -31,7 +32,7 @@ import { MilestoneSubmission } from './grant/entities/milestone-submission.entit
         username: config.getOrThrow<string>('DB_USERNAME'),
         password: config.getOrThrow<string>('DB_PASSWORD'),
         database: config.getOrThrow<string>('DB_NAME'),
-        entities: [WebProof, Grant, MilestoneSubmission],
+        entities: [WebProof, Grant, MilestoneSubmission, MilestoneWarning],
         synchronize: config.get<boolean>('DB_SYNCHRONIZE') ?? false,
         logging: config.get<string>('NODE_ENV') === 'development',
         ssl:
