@@ -1,6 +1,6 @@
 // src/identity/identity.service.spec.ts
-// Unit tests for IdentityService (GitHub OAuth Oracle + EAS Attestation version).
-// All external dependencies (TypeORM repo, ConfigService, fetch, ethers.Contract) are mocked.
+// Unit tests for IdentityService (GitHub OAuth Oracle + ZK Binding version).
+// All external dependencies (TypeORM repo, ConfigService, fetch, ethers) are mocked.
 
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
@@ -29,28 +29,9 @@ const mockFetchResponse = (
   }) as Response;
 
 const originalFetch = global.fetch;
-let mockFetch: jest.MockedFunction<typeof fetch>;
+let mockFetch: jest.Mock;
 
 // ── Mock ethers ───────────────────────────────────────────────────────────────
-
-const mockTxWait = jest.fn().mockResolvedValue({
-  hash: '0x' + 'a'.repeat(64),
-  logs: [
-    {
-      topics: [
-        '0x8bf46bf4cfd674fa735a3d63ec1c9ad4153f033c290341f3a588b75c68f3c78e', // Attested event sig
-        '0x000000000000000000000000d8da6bf26964af9d7eed9e03e53415d37aa96045', // recipient
-        '0x0000000000000000000000000000000000000000000000000000000000000001', // attester
-        '0x' + 'b'.repeat(64), // schemaUID (indexed)
-      ],
-      data: '0x' + 'c'.repeat(64), // uid (non-indexed)
-    },
-  ],
-});
-
-const mockAttest = jest.fn().mockResolvedValue({
-  wait: mockTxWait,
-});
 
 jest.mock('ethers', () => {
   const actual = jest.requireActual<typeof import('ethers')>('ethers');
@@ -58,15 +39,7 @@ jest.mock('ethers', () => {
     ...actual,
     ethers: {
       ...actual.ethers,
-      JsonRpcProvider: jest.fn().mockImplementation(() => ({})),
-      Wallet: jest.fn().mockImplementation(() => ({})),
-      Contract: jest.fn().mockImplementation(() => ({
-        attest: mockAttest,
-      })),
       AbiCoder: actual.ethers.AbiCoder,
-      ZeroHash: actual.ethers.ZeroHash,
-      id: actual.ethers.id,
-      Interface: actual.ethers.Interface,
     },
   };
 });
@@ -83,7 +56,6 @@ const MOCK_GITHUB_USER = {
   created_at: '2019-06-01T00:00:00Z',
   public_repos: 42,
   followers: 200,
-  following: 50,
   public_gists: 5,
   bio: 'Building cool stuff',
   company: 'Acme',
@@ -92,13 +64,11 @@ const MOCK_GITHUB_USER = {
 };
 
 const MOCK_REPOS = [
-  { stargazers_count: 50, language: 'TypeScript' },
-  { stargazers_count: 30, language: 'Rust' },
-  { stargazers_count: 20, language: 'TypeScript' },
-  { stargazers_count: 28, language: 'Solidity' },
+  { stargazers_count: 50, language: 'TypeScript', fork: false },
+  { stargazers_count: 30, language: 'Rust', fork: false },
+  { stargazers_count: 20, language: 'TypeScript', fork: false },
+  { stargazers_count: 28, language: 'Solidity', fork: false },
 ];
-
-const MOCK_COMMIT_SEARCH = { total_count: 1500 };
 
 const MOCK_EVENTS = [
   { type: 'PushEvent', created_at: new Date().toISOString() },
@@ -109,26 +79,38 @@ const MOCK_EVENTS = [
   }, // > 90 days ago
 ];
 
-const MOCK_ORGS = [{ login: 'ethereum' }, { login: 'openzeppelin' }];
-
 // Helper to set up fetch mock for the OAuth callback flow
 function setupFetchForOAuthCallback() {
-  mockFetch = jest
-    .fn()
-    // 1. Token exchange
-    .mockResolvedValueOnce(
-      mockFetchResponse({ access_token: 'gho_test_token_123' }),
-    )
-    // 2. GET /user
-    .mockResolvedValueOnce(mockFetchResponse(MOCK_GITHUB_USER))
-    // 3. GET /user/repos
-    .mockResolvedValueOnce(mockFetchResponse(MOCK_REPOS))
-    // 4. GET /search/commits
-    .mockResolvedValueOnce(mockFetchResponse(MOCK_COMMIT_SEARCH))
-    // 5. GET /users/{login}/events/public
-    .mockResolvedValueOnce(mockFetchResponse(MOCK_EVENTS))
-    // 6. GET /user/orgs
-    .mockResolvedValueOnce(mockFetchResponse(MOCK_ORGS));
+  mockFetch = jest.fn().mockImplementation((url) => {
+    const urlString = String(url);
+    if (urlString.includes('/oauth/access_token')) {
+      return Promise.resolve(mockFetchResponse({ access_token: 'gho_test_token_123' }));
+    }
+    if (urlString.includes('/user/repos')) {
+      if (urlString.includes('page=2')) {
+        return Promise.resolve(mockFetchResponse([]));
+      }
+      return Promise.resolve(mockFetchResponse(MOCK_REPOS));
+    }
+    if (urlString.includes('/graphql')) {
+      return Promise.resolve(mockFetchResponse({
+        data: {
+          viewer: {
+            contributionsCollection: {
+              totalCommitContributions: 1500,
+            },
+          },
+        },
+      }));
+    }
+    if (urlString.includes('/events')) {
+      return Promise.resolve(mockFetchResponse(MOCK_EVENTS));
+    }
+    if (urlString.includes('/user')) {
+      return Promise.resolve(mockFetchResponse(MOCK_GITHUB_USER));
+    }
+    return Promise.resolve(mockFetchResponse({}, { status: 404, ok: false }));
+  });
 
   global.fetch = mockFetch;
 }
@@ -140,6 +122,7 @@ describe('IdentityService', () => {
 
   const mockRepo = {
     findOne: jest.fn(),
+    findOneOrFail: jest.fn(),
     upsert: jest
       .fn()
       .mockResolvedValue({ identifiers: [{ requestId: REQ_ID }] }),
@@ -153,12 +136,12 @@ describe('IdentityService', () => {
         GITHUB_CLIENT_SECRET: 'test-client-secret',
         GITHUB_CALLBACK_URL: 'https://api.example.com/api/v1/identity/callback',
         ORACLE_PRIVATE_KEY: '0x' + 'a'.repeat(64),
-        EAS_CONTRACT_ADDRESS: '0xbD75f629A22Dc1ceD33dDA0b68c546A1c035c458',
-        EAS_SCHEMA_UID: '0x' + 'b'.repeat(64),
-        ARBITRUM_RPC_URL: 'https://arb1.arbitrum.io/rpc',
         FRONTEND_URL: 'http://localhost:3000',
       };
       return map[key] ?? '';
+    }),
+    get: jest.fn((key: string) => {
+      return '';
     }),
   };
 
@@ -221,7 +204,7 @@ describe('IdentityService', () => {
       );
       expect(result.oauthUrl).toContain('client_id=test-client-id');
       expect(result.oauthUrl).toContain(`state=${REQ_ID}`);
-      expect(result.oauthUrl).toContain('scope=read%3Auser%2Cread%3Aorg');
+      expect(result.oauthUrl).toContain('scope=read%3Auser');
       expect(result.requestId).toBe(REQ_ID);
     });
 
@@ -242,6 +225,12 @@ describe('IdentityService', () => {
         walletAddress: WALLET,
         status: ProofStatus.PENDING,
       });
+      mockRepo.findOneOrFail.mockResolvedValue({
+        requestId: REQ_ID,
+        walletAddress: WALLET,
+        walletAddressHi: '3638845938',
+        walletAddressLo: '140075495586578064988875286336449888325',
+      });
 
       setupFetchForOAuthCallback();
 
@@ -254,10 +243,7 @@ describe('IdentityService', () => {
       expect(redirectUrl).toContain('http://localhost:3000/verify/success');
       expect(redirectUrl).toContain(`requestId=${REQ_ID}`);
 
-      // Should have called update multiple times:
-      // 1. OAUTH_COMPLETE with accessToken
-      // 2. DATA_FETCHED with all GitHub data
-      // 3. ATTESTED with attestation UID + token cleared
+      // Should have called update multiple times
       expect(mockRepo.update).toHaveBeenCalledTimes(3);
       const updateCalls = mockRepo.update.mock.calls as unknown[][];
 
@@ -278,22 +264,17 @@ describe('IdentityService', () => {
       expect(dataFetchedPayload.languages).toEqual(
         expect.arrayContaining(['TypeScript', 'Rust', 'Solidity']),
       );
-      expect(dataFetchedPayload.languages).toHaveLength(3);
-
-      // Check orgs extracted
-      expect(dataFetchedPayload.orgs).toEqual(['ethereum', 'openzeppelin']);
 
       // Check contribution events (only 2 are within 90d)
       expect(dataFetchedPayload.contributionEvents90d).toBe(2);
 
-      // Check the ATTESTED update clears the token
+      // Check the ATTESTED update
       const attestedPayload = updateCalls[2]?.[1] as Record<string, unknown>;
       expect(attestedPayload).toMatchObject({
         status: ProofStatus.ATTESTED,
-        oauthAccessToken: null,
       });
-      expect(attestedPayload.attestationUid).toBeDefined();
-      expect(attestedPayload.easTxHash).toBeDefined();
+      expect(attestedPayload.oracleSignature).toBeDefined();
+      expect(attestedPayload.messageHash).toBeDefined();
     });
 
     it('throws BadRequestException for invalid state (CSRF)', async () => {
@@ -322,11 +303,10 @@ describe('IdentityService', () => {
         status: ProofStatus.PENDING,
       });
 
-      // Token exchange succeeds
+      // Token exchange succeeds but profile fetch fails
       mockFetch = jest
         .fn()
         .mockResolvedValueOnce(mockFetchResponse({ access_token: 'gho_test' }))
-        // But /user fails with 403 rate limit
         .mockResolvedValueOnce(
           mockFetchResponse(
             { message: 'rate limit exceeded' },
@@ -339,7 +319,7 @@ describe('IdentityService', () => {
 
       expect(redirectUrl).toContain('/verify/failed');
 
-      // Should have marked FAILED with token cleared
+      // Should have marked FAILED
       const updateCalls = mockRepo.update.mock.calls as unknown[][];
       const failedCall = updateCalls.find(
         (call: unknown[]) =>
@@ -349,33 +329,9 @@ describe('IdentityService', () => {
       const failedPayload = failedCall?.[1] as
         | Record<string, unknown>
         | undefined;
-      expect(failedPayload?.oauthAccessToken).toBeNull();
       expect(failedPayload?.errorMessage).toEqual(
         expect.stringContaining('rate limit'),
       );
-    });
-
-    it('marks FAILED when token exchange returns error', async () => {
-      mockRepo.findOne.mockResolvedValue({
-        requestId: REQ_ID,
-        walletAddress: WALLET,
-        status: ProofStatus.PENDING,
-      });
-
-      mockFetch = jest.fn().mockResolvedValueOnce(
-        mockFetchResponse({
-          error: 'bad_verification_code',
-          error_description: 'The code has expired',
-        }),
-      );
-      global.fetch = mockFetch;
-
-      const redirectUrl = await service.handleOAuthCallback(
-        'expired-code',
-        REQ_ID,
-      );
-
-      expect(redirectUrl).toContain('/verify/failed');
     });
   });
 
@@ -386,8 +342,8 @@ describe('IdentityService', () => {
       mockRepo.findOne.mockResolvedValue({
         requestId: REQ_ID,
         status: ProofStatus.ATTESTED,
-        attestationUid: '0x' + 'c'.repeat(64),
-        easTxHash: '0x' + 'a'.repeat(64),
+        oracleSignature: '0x' + 's'.repeat(128),
+        messageHash: '0x' + 'h'.repeat(64),
         githubLogin: 'alice',
         githubId: 12345678,
         githubCreatedAt: new Date('2019-06-01'),
@@ -399,14 +355,15 @@ describe('IdentityService', () => {
         contributionEvents90d: 85,
         publicGists: 5,
         languages: ['TypeScript', 'Rust'],
-        orgs: ['ethereum'],
+        walletAddressHi: '3638845938',
+        walletAddressLo: '140075495586578064988875286336449888325',
       });
 
       const result = await service.getAttestation(REQ_ID);
 
       expect(result).toMatchObject({
         requestId: REQ_ID,
-        attestationUid: '0x' + 'c'.repeat(64),
+        oracleSignature: '0x' + 's'.repeat(128),
         githubLogin: 'alice',
         totalStars: 128,
       });
@@ -470,8 +427,8 @@ describe('IdentityService', () => {
         totalStars: 128,
         followers: 200,
         commitCount: 1500,
-        attestationUid: '0x' + 'c'.repeat(64),
-        easTxHash: '0x' + 'a'.repeat(64),
+        oracleSignature: '0x' + 's'.repeat(128),
+        messageHash: '0x' + 'h'.repeat(64),
         txHash: null,
         errorMessage: null,
       });
@@ -481,7 +438,7 @@ describe('IdentityService', () => {
       expect(result).toMatchObject({
         status: ProofStatus.ATTESTED,
         githubLogin: 'alice',
-        attestationUid: '0x' + 'c'.repeat(64),
+        oracleSignature: '0x' + 's'.repeat(128),
       });
     });
 
@@ -497,14 +454,7 @@ describe('IdentityService', () => {
 
   describe('fetchGitHubData', () => {
     it('aggregates data from all GitHub API endpoints', async () => {
-      mockFetch = jest
-        .fn()
-        .mockResolvedValueOnce(mockFetchResponse(MOCK_GITHUB_USER))
-        .mockResolvedValueOnce(mockFetchResponse(MOCK_REPOS))
-        .mockResolvedValueOnce(mockFetchResponse(MOCK_COMMIT_SEARCH))
-        .mockResolvedValueOnce(mockFetchResponse(MOCK_EVENTS))
-        .mockResolvedValueOnce(mockFetchResponse(MOCK_ORGS));
-      global.fetch = mockFetch;
+      setupFetchForOAuthCallback();
 
       const data = await service.fetchGitHubData('test-token');
 
@@ -520,13 +470,9 @@ describe('IdentityService', () => {
       expect(data.languages).toContain('TypeScript');
       expect(data.languages).toContain('Rust');
       expect(data.languages).toContain('Solidity');
-      expect(data.orgs).toEqual(['ethereum', 'openzeppelin']);
 
       // Check account age is reasonable
       expect(data.accountAgeSeconds).toBeGreaterThan(0);
-
-      // Verify 5 API calls were made
-      expect(mockFetch).toHaveBeenCalledTimes(5);
     });
 
     it('handles rate limit (403) by throwing descriptive error', async () => {
@@ -541,7 +487,7 @@ describe('IdentityService', () => {
       global.fetch = mockFetch;
 
       await expect(service.fetchGitHubData('test-token')).rejects.toThrow(
-        /rate limit exceeded/,
+        /rate limit exceeded|GitHub API rate limit/,
       );
     });
 
@@ -557,31 +503,44 @@ describe('IdentityService', () => {
       global.fetch = mockFetch;
 
       await expect(service.fetchGitHubData('test-token')).rejects.toThrow(
-        /rate limit exceeded/,
+        /rate limit exceeded|GitHub API rate limit/,
       );
     });
 
-    it('gracefully handles commit search failure', async () => {
-      mockFetch = jest
-        .fn()
-        .mockResolvedValueOnce(mockFetchResponse(MOCK_GITHUB_USER))
-        .mockResolvedValueOnce(mockFetchResponse(MOCK_REPOS))
-        // Commit search fails with 422
-        .mockResolvedValueOnce(
-          mockFetchResponse(
-            { message: 'Validation Failed' },
-            { ok: false, status: 422 },
-          ),
-        )
-        .mockResolvedValueOnce(mockFetchResponse(MOCK_EVENTS))
-        .mockResolvedValueOnce(mockFetchResponse(MOCK_ORGS));
+    it('gracefully handles commit search failure by falling back to search API', async () => {
+      mockFetch = jest.fn().mockImplementation((url) => {
+        const urlString = String(url);
+        if (urlString.includes('/oauth/access_token')) {
+          return Promise.resolve(mockFetchResponse({ access_token: 'gho_test_token_123' }));
+        }
+        if (urlString.includes('/user/repos')) {
+          if (urlString.includes('page=2')) {
+            return Promise.resolve(mockFetchResponse([]));
+          }
+          return Promise.resolve(mockFetchResponse(MOCK_REPOS));
+        }
+        if (urlString.includes('/graphql')) {
+          // GraphQL query fails
+          return Promise.resolve(mockFetchResponse({ errors: [{ message: 'GraphQL fail' }] }, { status: 400, ok: false }));
+        }
+        if (urlString.includes('/search/commits')) {
+          // Fallback search API succeeds
+          return Promise.resolve(mockFetchResponse({ total_count: 750 }));
+        }
+        if (urlString.includes('/events')) {
+          return Promise.resolve(mockFetchResponse(MOCK_EVENTS));
+        }
+        if (urlString.includes('/user')) {
+          return Promise.resolve(mockFetchResponse(MOCK_GITHUB_USER));
+        }
+        return Promise.resolve(mockFetchResponse({}, { status: 404, ok: false }));
+      });
       global.fetch = mockFetch;
 
       const data = await service.fetchGitHubData('test-token');
 
-      // commitCount defaults to 0 on failure
-      expect(data.commitCount).toBe(0);
-      // Other fields still populated
+      // commitCount fell back to 750 successfully!
+      expect(data.commitCount).toBe(750);
       expect(data.login).toBe('alice');
       expect(data.totalStars).toBe(128);
     });

@@ -330,6 +330,45 @@ export class IdentityService {
     };
   }
 
+  async getAttestationByWallet(walletAddress: string): Promise<AttestationResponseDto> {
+    const record = await this.webProofRepo.findOne({
+      where: { walletAddress: walletAddress.toLowerCase() },
+      order: { createdAt: 'DESC' },
+    });
+    if (!record) {
+      throw new NotFoundException(`No verification session found for wallet address=${walletAddress}`);
+    }
+
+    if (record.status === ProofStatus.PENDING) {
+      throw new NotFoundException(`Verification not yet complete for wallet address=${walletAddress}.`);
+    }
+    if (record.status === ProofStatus.FAILED) {
+      throw new BadRequestException(`Verification failed: ${record.errorMessage ?? 'unknown'}`);
+    }
+
+    return {
+      requestId:        record.requestId,
+      oracleSignature:  record.oracleSignature,
+      messageHash:      record.messageHash,
+      status:           record.status,
+      githubLogin:      record.githubLogin,
+      githubId:         Number(record.githubId),
+      githubCreatedAt:  record.githubCreatedAt,
+      githubCreatedYear: record.githubCreatedYear,
+      accountAgeSeconds: Number(record.accountAgeSeconds),
+      publicRepos:      record.publicRepos,
+      followers:        record.followers,
+      commitCount:      record.commitCount,
+      totalStars:       record.totalStars,
+      contributionEvents90d: record.contributionEvents90d,
+      publicGists:      record.publicGists,
+      languages:        record.languages,
+      contributionTier: record.contributionTier,
+      walletAddressHi:  record.walletAddressHi,
+      walletAddressLo:  record.walletAddressLo,
+    };
+  }
+
   // ── 5. Confirm on-chain tx ─────────────────────────────────────────────────
 
   async markVerified(requestId: string, txHash: string): Promise<void> {

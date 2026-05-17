@@ -142,6 +142,27 @@ export class IdentityController {
     return this.identityService.getAttestation(requestId);
   }
 
+  // ── GET /identity/attestation/wallet/:address ──────────────────────────────
+
+  @Get('identity/attestation/wallet/:address')
+  @ApiOperation({
+    summary: 'Retrieve EAS attestation and GitHub data by wallet address',
+    description:
+      'Called by the frontend to fetch the oracle attestation details (signature, message hash, and inputs) ' +
+      'associated with a specific verified or attested wallet address.',
+  })
+  @ApiParam({ name: 'address', description: 'Ethereum wallet address' })
+  @ApiResponse({ status: 200, type: AttestationResponseDto })
+  @ApiResponse({
+    status: 404,
+    description: 'No verified/attested session found for this wallet address',
+  })
+  async getAttestationByWallet(
+    @Param('address') address: string,
+  ): Promise<AttestationResponseDto> {
+    return this.identityService.getAttestationByWallet(address);
+  }
+
   // ── POST /identity/confirmed/:requestId ───────────────────────────────────
 
   @Post('identity/confirmed/:requestId')
