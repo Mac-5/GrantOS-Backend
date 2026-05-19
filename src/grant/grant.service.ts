@@ -274,6 +274,7 @@ export class GrantService {
         quorum: grant.quorum,
         committee: JSON.parse(grant.committee),
         createdAt: grant.createdAt,
+        txHash: grant.txHash,
       },
       milestones: enrichedMilestones,
       warnings,

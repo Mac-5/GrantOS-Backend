@@ -10,10 +10,16 @@ import { MilestoneSubmission } from './entities/milestone-submission.entity';
 import { MilestoneWarningController } from './milestone-warning.controller';
 import { MilestoneWarningService } from './milestone-warning.service';
 import { MilestoneWarning } from './entities/milestone-warning.entity';
+import { GrantEventService } from './grant-event.service';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Grant, MilestoneSubmission, MilestoneWarning])],
+  imports: [
+    TypeOrmModule.forFeature([Grant, MilestoneSubmission, MilestoneWarning]),
+    NotificationModule,
+  ],
   controllers: [GrantController, MilestoneSubmissionController, MilestoneWarningController],
-  providers: [GrantService, MilestoneSubmissionService, MilestoneWarningService],
+  providers: [GrantService, MilestoneSubmissionService, MilestoneWarningService, GrantEventService],
+  exports: [GrantService, GrantEventService],
 })
 export class GrantModule {}
