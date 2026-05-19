@@ -67,9 +67,42 @@ export class GrantService {
   async findAllEnriched(): Promise<any[]> {
     const grants = await this.repo.find({ order: { createdAt: 'DESC' } });
     
-    return Promise.all(grants.map(async (grant) => {
-      const submissions = await this.submissionRepo.find({ where: { grantId: grant.onChainId } });
-      const warnings = await this.warningRepo.find({ where: { grantId: grant.onChainId } });
+    if (grants.length === 0) return [];
+
+    const grantIds = grants.map(g => g.onChainId);
+    
+    // Batch fetch all submissions and warnings in 2 queries instead of N queries
+    const [allSubmissions, allWarnings] = await Promise.all([
+      this.submissionRepo.find({ 
+        where: grantIds.map(id => ({ grantId: id })),
+      }),
+      this.warningRepo.find({ 
+        where: grantIds.map(id => ({ grantId: id })),
+      }),
+    ]);
+
+    // Group by grantId for O(1) lookup
+    const submissionsByGrant = new Map<number, typeof allSubmissions>();
+    const warningsByGrant = new Map<number, typeof allWarnings>();
+    
+    allSubmissions.forEach(s => {
+      if (!submissionsByGrant.has(s.grantId)) {
+        submissionsByGrant.set(s.grantId, []);
+      }
+      submissionsByGrant.get(s.grantId)!.push(s);
+    });
+    
+    allWarnings.forEach(w => {
+      if (!warningsByGrant.has(w.grantId)) {
+        warningsByGrant.set(w.grantId, []);
+      }
+      warningsByGrant.get(w.grantId)!.push(w);
+    });
+
+    // Map grants with pre-fetched data
+    return grants.map(grant => {
+      const submissions = submissionsByGrant.get(grant.onChainId) || [];
+      const warnings = warningsByGrant.get(grant.onChainId) || [];
       
       const completedMilestones = submissions.filter(s => s.status === SubmissionStatus.APPROVED).length;
       const submittedMilestones = submissions.filter(s => s.status === SubmissionStatus.SUBMITTED).length;
@@ -98,7 +131,7 @@ export class GrantService {
         hasSlashed,
         createdAt: grant.createdAt,
       };
-    }));
+    });
   }
 
   async deleteById(id: number): Promise<void> {
@@ -299,13 +332,16 @@ export class GrantService {
     }
 
     const grantIds = grants.map(g => g.onChainId);
-    const submissions = await this.submissionRepo.find({
-      where: { grantId: grantIds as any, builderAddress: address.toLowerCase() },
-    });
-
-    const warnings = await this.warningRepo.find({
-      where: { grantId: grantIds as any, builderAddress: address.toLowerCase() },
-    });
+    
+    // Batch fetch submissions and warnings
+    const [submissions, warnings] = await Promise.all([
+      this.submissionRepo.find({
+        where: grantIds.map(id => ({ grantId: id, builderAddress: address.toLowerCase() })),
+      }),
+      this.warningRepo.find({
+        where: grantIds.map(id => ({ grantId: id, builderAddress: address.toLowerCase() })),
+      }),
+    ]);
 
     const approvedSubmissions = submissions.filter(s => s.status === SubmissionStatus.APPROVED);
     const totalMilestones = grants.reduce((sum, g) => sum + JSON.parse(g.milestones).length, 0);
@@ -398,14 +434,59 @@ export class GrantService {
     let warningsReceived = 0;
     let slashed = 0;
 
+    if (grants.length === 0) {
+      return {
+        score: 50,
+        letterGrade: 'C',
+        deliveryRate: 0,
+        zkVerified: false,
+        breakdown: {
+          approvedOnTime: 0,
+          approvedLate: 0,
+          zkProofsSubmitted: 0,
+          rejected: 0,
+          warningsReceived: 0,
+          slashed: 0,
+          totalPoints: 0,
+        },
+        history: [],
+      };
+    }
+
+    const grantIds = grants.map(g => g.onChainId);
+    
+    // Batch fetch all submissions and warnings
+    const [allSubmissions, allWarnings] = await Promise.all([
+      this.submissionRepo.find({
+        where: grantIds.map(id => ({ grantId: id, builderAddress: address.toLowerCase() })),
+      }),
+      this.warningRepo.find({
+        where: grantIds.map(id => ({ grantId: id, builderAddress: address.toLowerCase() })),
+      }),
+    ]);
+
+    // Group by grantId for efficient lookup
+    const submissionsByGrant = new Map<number, typeof allSubmissions>();
+    const warningsByGrant = new Map<number, typeof allWarnings>();
+    
+    allSubmissions.forEach(s => {
+      if (!submissionsByGrant.has(s.grantId)) {
+        submissionsByGrant.set(s.grantId, []);
+      }
+      submissionsByGrant.get(s.grantId)!.push(s);
+    });
+    
+    allWarnings.forEach(w => {
+      if (!warningsByGrant.has(w.grantId)) {
+        warningsByGrant.set(w.grantId, []);
+      }
+      warningsByGrant.get(w.grantId)!.push(w);
+    });
+
     for (const grant of grants) {
       const milestones = JSON.parse(grant.milestones);
-      const submissions = await this.submissionRepo.find({
-        where: { grantId: grant.onChainId, builderAddress: address.toLowerCase() },
-      });
-      const warnings = await this.warningRepo.find({
-        where: { grantId: grant.onChainId, builderAddress: address.toLowerCase() },
-      });
+      const submissions = submissionsByGrant.get(grant.onChainId) || [];
+      const warnings = warningsByGrant.get(grant.onChainId) || [];
 
       for (let i = 0; i < milestones.length; i++) {
         const milestone = milestones[i];
