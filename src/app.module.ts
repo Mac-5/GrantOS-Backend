@@ -10,6 +10,8 @@ import { GrantModule } from './grant/grant.module';
 import { Grant } from './grant/entities/grant.entity';
 import { MilestoneSubmission } from './grant/entities/milestone-submission.entity';
 import { MilestoneWarning } from './grant/entities/milestone-warning.entity';
+import { NotificationModule } from './notification/notification.module';
+import { Notification } from './notification/entities/notification.entity';
 
 @Module({
   imports: [
@@ -32,7 +34,7 @@ import { MilestoneWarning } from './grant/entities/milestone-warning.entity';
         username: config.getOrThrow<string>('DB_USERNAME'),
         password: config.getOrThrow<string>('DB_PASSWORD'),
         database: config.getOrThrow<string>('DB_NAME'),
-        entities: [WebProof, Grant, MilestoneSubmission, MilestoneWarning],
+        entities: [WebProof, Grant, MilestoneSubmission, MilestoneWarning, Notification],
         synchronize: config.get<boolean>('DB_SYNCHRONIZE') ?? false,
         logging: config.get<string>('NODE_ENV') === 'development',
         ssl:
@@ -46,6 +48,7 @@ import { MilestoneWarning } from './grant/entities/milestone-warning.entity';
     // ── Feature modules ───────────────────────────────────────────────────────
     IdentityModule,
     GrantModule,
+    NotificationModule,
   ],
 })
 export class AppModule {}
