@@ -1,5 +1,6 @@
 // src/grant/milestone-submission.service.ts
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -15,6 +16,7 @@ import {
   SubmitMilestoneDto,
   RecordVoteDto,
 } from './dto/milestone-submission.dto';
+import { IdentityService } from '../identity/identity.service';
 
 @Injectable()
 export class MilestoneSubmissionService {
@@ -23,6 +25,7 @@ export class MilestoneSubmissionService {
   constructor(
     @InjectRepository(MilestoneSubmission)
     private readonly repo: Repository<MilestoneSubmission>,
+    private readonly identityService: IdentityService,
   ) {}
 
   // ── Submit a milestone ──────────────────────────────────────────────────
@@ -43,6 +46,44 @@ export class MilestoneSubmissionService {
       );
     }
 
+    // ── Server-authoritative ZK verification ────────────────────────────────
+    // The client's `zkVerified` flag is NEVER trusted. For ZK-required
+    // milestones we re-run Barretenberg verification here and derive the
+    // authoritative result. An invalid (or missing) proof is rejected.
+    let zkVerified = false;
+    if (dto.isZkRequired) {
+      if (!dto.proof || !dto.publicInputs || dto.publicInputs.length === 0) {
+        throw new BadRequestException(
+          'ZK milestones require `proof` and `publicInputs` for server-side verification.',
+        );
+      }
+
+      const result = await this.identityService.verifyZkProof(
+        dto.proof,
+        dto.publicInputs,
+      );
+      zkVerified = result.valid;
+
+      // Default: a milestone with an invalid proof is rejected outright.
+      // Ops can set ZK_VERIFY_ENFORCE=false to degrade to "record-but-flag"
+      // mode (e.g. if the circuit artifact is not deployed to this host),
+      // in which case the unverified status is still surfaced to the committee.
+      const enforce = (process.env.ZK_VERIFY_ENFORCE ?? 'true') !== 'false';
+
+      if (!result.valid) {
+        this.logger.warn(
+          `ZK verification failed: grant=${dto.grantId} ` +
+            `milestone=${dto.milestoneIndex} builder=${dto.builderAddress} ` +
+            `reason=${result.error ?? 'invalid proof'} enforce=${enforce}`,
+        );
+        if (enforce) {
+          throw new BadRequestException(
+            `ZK proof verification failed: ${result.error ?? 'invalid proof'}`,
+          );
+        }
+      }
+    }
+
     const submission = this.repo.create({
       grantId: dto.grantId,
       escrowAddress: dto.escrowAddress.toLowerCase(),
@@ -54,7 +95,7 @@ export class MilestoneSubmissionService {
       prNumber: dto.prNumber ?? null,
       isZkRequired: dto.isZkRequired,
       proofHash: dto.proofHash ?? null,
-      zkVerified: dto.zkVerified ?? false,
+      zkVerified, // server-derived, not client-supplied
       easAttestationUid: dto.easAttestationUid ?? null,
       aiVerdict: dto.aiVerdict ?? null,
       aiExplanation: dto.aiExplanation ?? null,
