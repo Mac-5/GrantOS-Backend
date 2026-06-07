@@ -1,5 +1,6 @@
 // src/grant/dto/milestone-submission.dto.ts
 import {
+  IsArray,
   IsBoolean,
   IsEthereumAddress,
   IsInt,
@@ -60,7 +61,28 @@ export class SubmitMilestoneDto {
   @IsOptional()
   proofHash?: string;
 
-  @ApiProperty({ example: true, description: 'Whether the ZK proof was verified on-chain' })
+  @ApiPropertyOptional({
+    description:
+      'ZK proof bytes (hex). Required for ZK milestones — the server re-verifies this with Barretenberg before recording.',
+  })
+  @IsString()
+  @IsOptional()
+  proof?: string;
+
+  @ApiPropertyOptional({
+    description: 'ZK public inputs (array of bytes32 hex). Required for ZK milestones.',
+    type: [String],
+  })
+  @IsArray()
+  @IsString({ each: true })
+  @IsOptional()
+  publicInputs?: string[];
+
+  @ApiPropertyOptional({
+    example: true,
+    description:
+      'IGNORED by the server — the backend sets the authoritative value from its own Barretenberg verification.',
+  })
   @IsBoolean()
   @IsOptional()
   zkVerified?: boolean;

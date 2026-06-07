@@ -10,5 +10,6 @@ import { WebProof } from './entities/web-proof.entity';
   imports: [TypeOrmModule.forFeature([WebProof])],
   controllers: [IdentityController],
   providers: [IdentityService],
+  exports: [IdentityService],
 })
 export class IdentityModule {}

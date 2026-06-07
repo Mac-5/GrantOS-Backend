@@ -558,17 +558,20 @@ export class GrantService {
       warningsReceived * -5 +
       slashed * -15;
 
-    // Calculate score (0-100 scale)
-    // Base score of 50, then add/subtract based on performance
-    const maxPossiblePositive = history.length * 12; // 10 + 2 for ZK
-    const score = Math.max(0, Math.min(100, 50 + (totalPoints / Math.max(1, maxPossiblePositive)) * 50));
+    // Calculate score (0-100 scale).
+    // CANONICAL reputation is the EAS-derived computation in the frontend
+    // (GrantOS-Frontend/lib/reputation.ts), read directly from on-chain EAS
+    // attestations. This backend value is an indexer mirror and MUST use the
+    // SAME aggregation so it never disagrees: start at 0 and sum the per-event
+    // deltas, clamped to 0-100 — NOT a base-50 normalization.
+    const score = Math.max(0, Math.min(100, totalPoints));
 
-    // Letter grade
-    const letterGrade = 
+    // Letter grade — thresholds mirror lib/reputation.ts::letterGradeFromScore
+    const letterGrade =
       score >= 90 ? 'A' :
-      score >= 80 ? 'B' :
-      score >= 70 ? 'C' :
-      score >= 60 ? 'D' : 'F';
+      score >= 75 ? 'B' :
+      score >= 60 ? 'C' :
+      score >= 40 ? 'D' : 'F';
 
     // Delivery rate
     const completedMilestones = approvedOnTime + approvedLate;

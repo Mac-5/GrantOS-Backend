@@ -12,11 +12,13 @@ import { MilestoneWarningService } from './milestone-warning.service';
 import { MilestoneWarning } from './entities/milestone-warning.entity';
 import { GrantEventService } from './grant-event.service';
 import { NotificationModule } from '../notification/notification.module';
+import { IdentityModule } from '../identity/identity.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Grant, MilestoneSubmission, MilestoneWarning]),
     NotificationModule,
+    IdentityModule,
   ],
   controllers: [GrantController, MilestoneSubmissionController, MilestoneWarningController],
   providers: [GrantService, MilestoneSubmissionService, MilestoneWarningService, GrantEventService],
