@@ -17,6 +17,11 @@ import {
   RecordVoteDto,
 } from './dto/milestone-submission.dto';
 import { IdentityService } from '../identity/identity.service';
+import { GrantService } from './grant.service';
+import { GrantEventService } from './grant-event.service';
+
+/** USDC is stored on-chain (and mirrored here) in 6-decimal base units. */
+const USDC_DECIMALS = 6;
 
 @Injectable()
 export class MilestoneSubmissionService {
@@ -26,7 +31,55 @@ export class MilestoneSubmissionService {
     @InjectRepository(MilestoneSubmission)
     private readonly repo: Repository<MilestoneSubmission>,
     private readonly identityService: IdentityService,
+    private readonly grantService: GrantService,
+    private readonly grantEventService: GrantEventService,
   ) {}
+
+  /**
+   * Resolve a grant's committee addresses and the title/amount of a given
+   * milestone from the indexed grant record. Returns `null` if the grant
+   * isn't indexed yet so callers can degrade gracefully (notifications are
+   * best-effort and must never break the core submit/vote flow).
+   */
+  private async resolveGrantContext(
+    grantId: number,
+    milestoneIndex: number,
+  ): Promise<{
+    committee: string[];
+    title: string;
+    amountUsdc: string;
+  } | null> {
+    try {
+      const grant = await this.grantService.findById(grantId);
+      const committee: string[] = JSON.parse(grant.committee ?? '[]');
+      const milestones: Array<{ title?: string; amount?: string }> = JSON.parse(
+        grant.milestones ?? '[]',
+      );
+      const milestone = milestones[milestoneIndex] ?? {};
+      return {
+        committee,
+        title: milestone.title || `Milestone ${milestoneIndex + 1}`,
+        amountUsdc: this.formatUsdc(milestone.amount),
+      };
+    } catch (err) {
+      this.logger.warn(
+        `Could not resolve grant context for notifications: grant=${grantId} ` +
+          `milestone=${milestoneIndex} reason=${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /** Format a 6-decimal USDC base-unit string into a human amount (e.g. "500"). */
+  private formatUsdc(raw?: string): string {
+    if (!raw) return '0';
+    try {
+      const value = Number(BigInt(raw)) / 10 ** USDC_DECIMALS;
+      return value.toLocaleString('en-US', { maximumFractionDigits: 2 });
+    } catch {
+      return raw;
+    }
+  }
 
   // ── Submit a milestone ──────────────────────────────────────────────────
 
@@ -112,6 +165,29 @@ export class MilestoneSubmissionService {
         `builder=${dto.builderAddress} zk=${dto.isZkRequired} proof=${dto.proofHash ?? 'none'}`,
     );
 
+    // Best-effort: notify every committee member that a milestone is waiting
+    // for review. Failures here must never roll back the submission itself.
+    try {
+      const ctx = await this.resolveGrantContext(
+        dto.grantId,
+        dto.milestoneIndex,
+      );
+      if (ctx && ctx.committee.length > 0) {
+        await this.grantEventService.notifyCommitteeMilestoneSubmitted(
+          ctx.committee,
+          dto.grantId,
+          dto.milestoneIndex,
+          ctx.title,
+          dto.builderAddress,
+        );
+      }
+    } catch (err) {
+      this.logger.error(
+        `Failed to dispatch committee submission notification: grant=${dto.grantId} ` +
+          `milestone=${dto.milestoneIndex} reason=${(err as Error).message}`,
+      );
+    }
+
     return saved;
   }
 
@@ -157,7 +233,42 @@ export class MilestoneSubmissionService {
       );
     }
 
-    return this.repo.save(submission);
+    const saved = await this.repo.save(submission);
+
+    // Best-effort: on a final approve/reject, notify the builder. Failures
+    // here must never roll back the recorded vote.
+    if (dto.finalStatus === 'approved' || dto.finalStatus === 'rejected') {
+      try {
+        const ctx = await this.resolveGrantContext(
+          dto.grantId,
+          dto.milestoneIndex,
+        );
+        const title = ctx?.title ?? `Milestone ${dto.milestoneIndex + 1}`;
+        if (dto.finalStatus === 'approved') {
+          await this.grantEventService.notifyMilestoneApproved(
+            submission.builderAddress,
+            dto.grantId,
+            dto.milestoneIndex,
+            title,
+            ctx?.amountUsdc ?? '0',
+          );
+        } else {
+          await this.grantEventService.notifyMilestoneRejected(
+            submission.builderAddress,
+            dto.grantId,
+            dto.milestoneIndex,
+            title,
+          );
+        }
+      } catch (err) {
+        this.logger.error(
+          `Failed to dispatch builder vote notification: grant=${dto.grantId} ` +
+            `milestone=${dto.milestoneIndex} reason=${(err as Error).message}`,
+        );
+      }
+    }
+
+    return saved;
   }
 
   // ── Queries ─────────────────────────────────────────────────────────────
