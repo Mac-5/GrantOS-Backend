@@ -127,8 +127,8 @@ export class MilestoneSubmissionController {
   @ApiOperation({
     summary: 'Get pending reviews for committee grants',
     description:
-      'Returns all active submissions for a list of grant IDs where the caller ' +
-      'is a committee member. Used to populate the committee review queue.',
+      'Returns all submissions (pending, approved, rejected) for a list of grant IDs ' +
+      'where the caller is a committee member. Used to populate the committee review tabs.',
   })
   @ApiQuery({
     name: 'grantIds',

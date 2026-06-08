@@ -319,7 +319,6 @@ export class MilestoneSubmissionService {
     return this.repo
       .createQueryBuilder('s')
       .where('s.grant_id IN (:...grantIds)', { grantIds })
-      .andWhere('s.status = :status', { status: SubmissionStatus.SUBMITTED })
       .orderBy('s.created_at', 'DESC')
       .getMany();
   }
