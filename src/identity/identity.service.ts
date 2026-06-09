@@ -126,6 +126,13 @@ function addressToLimbs(address: string): { hi: bigint; lo: bigint } {
   return { hi, lo };
 }
 
+// Domain separator — MUST equal OracleAttestationVerifier.DOMAIN on-chain
+// (keccak256("GrantOS:OracleAttestation:v1") == 0x1b87d5de...).
+const ATTESTATION_DOMAIN = ethers.id('GrantOS:OracleAttestation:v1');
+
+// Contribution tier name -> on-chain tier id (mirrors the Noir circuit / verifier).
+const TIER_ID: Record<string, number> = { Member: 0, Bronze: 1, Silver: 2, Gold: 3 };
+
 @Injectable()
 export class IdentityService {
   private readonly logger = new Logger(IdentityService.name);
@@ -267,19 +274,19 @@ export class IdentityService {
       // Reload to get walletAddressHi / walletAddressLo (set during init)
       const fresh = await this.webProofRepo.findOneOrFail({ where: { requestId: state } });
 
-      const { signature, messageHash } = this.generateOracleSignature(data, fresh);
+      const { signature, digest } = await this.generateAttestation(fresh);
 
       await this.webProofRepo.update(
         { requestId: state },
         {
           status:          ProofStatus.ATTESTED,
-          oracleSignature: signature,
-          messageHash,
+          oracleSignature: signature, // 65-byte ECDSA attestation = the `proof` arg on-chain
+          messageHash:     digest,
           // oauthAccessToken intentionally left null
         },
       );
 
-      this.logger.log(`Oracle signature generated requestId=${state} hash=${messageHash}`);
+      this.logger.log(`Oracle attestation generated requestId=${state} digest=${digest}`);
       return `${frontendUrl}/verify/success?requestId=${state}`;
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
@@ -327,6 +334,8 @@ export class IdentityService {
       // C3: wallet address limbs needed by frontend prover
       walletAddressHi:  record.walletAddressHi,
       walletAddressLo:  record.walletAddressLo,
+      // The exact [tier, githubId, year, hi, lo] bytes32[] the contract checks.
+      publicInputs:     this.buildPublicInputs(record),
     };
   }
 
@@ -366,6 +375,8 @@ export class IdentityService {
       contributionTier: record.contributionTier,
       walletAddressHi:  record.walletAddressHi,
       walletAddressLo:  record.walletAddressLo,
+      // The exact [tier, githubId, year, hi, lo] bytes32[] the contract checks.
+      publicInputs:     this.buildPublicInputs(record),
     };
   }
 
@@ -637,39 +648,56 @@ export class IdentityService {
    * (that would change the verifying key), but SHOULD be tracked in a separate
    * "oracle_key_version" column if key rotation is implemented.
    */
-  generateOracleSignature(
-    data:   GitHubContributorData,
-    record: Pick<WebProof, 'walletAddress' | 'walletAddressHi' | 'walletAddressLo'>,
-  ): { signature: string; messageHash: string } {
-    const privateKey = this.config.getOrThrow<string>('ORACLE_PRIVATE_KEY');
+  /**
+   * Builds the five public inputs the on-chain OracleAttestationVerifier checks:
+   * [tier, githubId, githubCreatedYear, walletAddressHi, walletAddressLo], each as
+   * a 32-byte word. The tier name is mapped to its numeric id (0..3).
+   */
+  buildPublicInputs(
+    record: Pick<WebProof, 'contributionTier' | 'githubId' | 'githubCreatedYear' | 'walletAddressHi' | 'walletAddressLo'>,
+  ): string[] {
+    const tierId = TIER_ID[(record.contributionTier ?? 'Member') as string] ?? 0;
+    const req = (v: string | number | bigint | null | undefined, name: string): bigint => {
+      if (v === null || v === undefined || v === '') {
+        throw new Error(`Cannot build attestation: missing ${name}`);
+      }
+      return BigInt(v);
+    };
+    const b32 = (v: bigint) => ethers.toBeHex(v, 32);
+    return [
+      b32(BigInt(tierId)),
+      b32(req(record.githubId, 'githubId')),
+      b32(req(record.githubCreatedYear, 'githubCreatedYear')),
+      b32(req(record.walletAddressHi, 'walletAddressHi')),
+      b32(req(record.walletAddressLo, 'walletAddressLo')),
+    ];
+  }
 
-    if (!record.walletAddress) throw new Error('walletAddress missing from record');
+  /**
+   * Oracle attestation in the exact format the on-chain OracleAttestationVerifier
+   * accepts: an EIP-191 (personal_sign) secp256k1 signature by the oracle key over
+   *   keccak256(abi.encode(DOMAIN, tier, githubId, year, walletHi, walletLo)).
+   *
+   * The returned `signature` is passed verbatim as the `proof` argument to
+   * GrantIdentityRegistry.verifyIdentity (and GrantEscrow.submitMilestone). No ZK
+   * proof generation is required any more — verification is a native ecrecover.
+   */
+  async generateAttestation(
+    record: Pick<WebProof, 'contributionTier' | 'githubId' | 'githubCreatedYear' | 'walletAddressHi' | 'walletAddressLo'>,
+  ): Promise<{ signature: string; publicInputs: string[]; digest: string }> {
+    const privateKey   = this.config.getOrThrow<string>('ORACLE_PRIVATE_KEY');
+    const publicInputs = this.buildPublicInputs(record);
 
-    const abiCoder   = new ethers.AbiCoder();
-    const encodedData = abiCoder.encode(
-      ['address', 'uint256', 'uint256', 'uint32', 'uint32', 'uint32'],
-      [
-        record.walletAddress,       // C3: binds proof to this wallet
-        data.githubId,
-        data.githubCreatedYear,
-        data.commitCount,           // private ZK witness
-        data.totalStars,            // private ZK witness
-        data.contributionEvents90d, // private ZK witness
-      ],
+    const inner = ethers.keccak256(
+      new ethers.AbiCoder().encode(
+        ['bytes32', 'bytes32', 'bytes32', 'bytes32', 'bytes32', 'bytes32'],
+        [ATTESTATION_DOMAIN, ...publicInputs],
+      ),
     );
 
-    const messageHash  = ethers.sha256(encodedData);
-    const signingKey   = new ethers.SigningKey(privateKey);
-    const sig          = signingKey.sign(messageHash);
-
-    // Low-s normalisation required by Noir's secp256k1 gadget.
-    const r      = ethers.zeroPadValue(sig.r, 32);
-    const rawS   = BigInt(sig.s);
-    const normS  = rawS > SECP256K1_HALF_N ? SECP256K1_N - rawS : rawS;
-    const s      = ethers.zeroPadValue(ethers.toBeHex(normS), 32);
-    const signature = r + s.substring(2);
-
-    return { signature, messageHash };
+    // signMessage applies the EIP-191 prefix and yields canonical low-s, v in {27,28}.
+    const signature = await new ethers.Wallet(privateKey).signMessage(ethers.getBytes(inner));
+    return { signature, publicInputs, digest: inner };
   }
 
   // ── GitHub API helper ──────────────────────────────────────────────────────

@@ -136,9 +136,15 @@ export class AttestationResponseDto {
   })
   walletAddressLo?: string | null;
 
-  // Private ZK witnesses — needed by the frontend prover to reconstruct the
-  // signed message and generate a valid proof. Not stored in DB after signing,
-  // but returned here transiently so the prover can use them.
+  // The exact public inputs the on-chain OracleAttestationVerifier checks:
+  // [tier, githubId, githubCreatedYear, walletAddressHi, walletAddressLo] as
+  // 32-byte words. The frontend passes `oracleSignature` as `proof` and this
+  // array as `publicInputs` to verifyIdentity — no ZK proving required.
+  @ApiPropertyOptional({ type: [String] })
+  publicInputs?: string[];
+
+  // Private ZK witnesses — retained for backwards compatibility / analytics.
+  // No longer required by the frontend (verification is now a native ecrecover).
   @ApiPropertyOptional({ example: 763 })
   commitCount?: number | null;
 
