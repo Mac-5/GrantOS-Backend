@@ -5,6 +5,18 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { GlobalHttpExceptionFilter } from './common/filters/http-exception.filter';
 
+// Backstop against transient RPC failures (e.g. a 429 from the chain indexer's
+// polling loop) taking down the whole API. These surface as unhandled
+// rejections from deep inside ethers' poller; log loudly but keep serving.
+process.on('unhandledRejection', (reason) => {
+  Logger.error(
+    `Unhandled promise rejection (process kept alive): ${
+      reason instanceof Error ? reason.stack ?? reason.message : String(reason)
+    }`,
+    'Process',
+  );
+});
+
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
   const app = await NestFactory.create(AppModule, {

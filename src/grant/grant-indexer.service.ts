@@ -115,7 +115,25 @@ export class GrantIndexerService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    this.provider = new ethers.JsonRpcProvider(rpcUrl);
+    // `staticNetwork` stops ethers re-detecting the chain (an extra eth_chainId)
+    // on every call. A longer poll interval slashes the eth_blockNumber +
+    // eth_getLogs volume that the event subscriptions generate — the public
+    // Arbitrum Sepolia endpoint 429s well before the ethers default (~4s).
+    this.provider = new ethers.JsonRpcProvider(rpcUrl, undefined, {
+      staticNetwork: true,
+    });
+    this.provider.pollingInterval = 15_000;
+    // A transient RPC failure (429/timeout) surfaces from the polling loop, not
+    // from any awaited call — without this handler it becomes an unhandled
+    // rejection that crashes the whole process. Log and keep running; the next
+    // poll self-heals.
+    this.provider.on('error', (err) => {
+      this.logger.warn(
+        `RPC provider error (continuing, indexer will retry): ${
+          (err as Error)?.message ?? String(err)
+        }`,
+      );
+    });
     this.factory = new ethers.Contract(factoryAddress, FACTORY_ABI, this.provider);
     this.logger.log(`GrantIndexer enabled (factory ${factoryAddress}).`);
 
