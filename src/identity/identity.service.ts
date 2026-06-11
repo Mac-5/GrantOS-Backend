@@ -44,6 +44,11 @@ import { ethers }           from 'ethers';
 import { readFile }         from 'node:fs/promises';
 import { resolve }          from 'node:path';
 import { Barretenberg, UltraHonkBackend } from '@aztec/bb.js';
+import {
+  computeIdentityCommitment,
+  parseSchnorrPrivateKey,
+  signIdentityCommitment,
+} from './schnorr-oracle';
 import { WebProof, ProofStatus }          from './entities/web-proof.entity';
 import {
   AttestationResponseDto,
@@ -275,12 +280,14 @@ export class IdentityService {
       const fresh = await this.webProofRepo.findOneOrFail({ where: { requestId: state } });
 
       const { signature, digest } = await this.generateAttestation(fresh);
+      const schnorrSignature = await this.generateSchnorrAttestation(fresh);
 
       await this.webProofRepo.update(
         { requestId: state },
         {
           status:          ProofStatus.ATTESTED,
           oracleSignature: signature, // 65-byte ECDSA attestation = the `proof` arg on-chain
+          oracleSchnorrSignature: schnorrSignature, // 64-byte s‖e for the v3 ZK circuit
           messageHash:     digest,
           // oauthAccessToken intentionally left null
         },
@@ -315,6 +322,7 @@ export class IdentityService {
     return {
       requestId:        record.requestId,
       oracleSignature:  record.oracleSignature,
+      oracleSchnorrSignature: record.oracleSchnorrSignature,
       messageHash:      record.messageHash,
       status:           record.status,
       githubLogin:      record.githubLogin,
@@ -698,6 +706,49 @@ export class IdentityService {
     // signMessage applies the EIP-191 prefix and yields canonical low-s, v in {27,28}.
     const signature = await new ethers.Wallet(privateKey).signMessage(ethers.getBytes(inner));
     return { signature, publicInputs, digest: inner };
+  }
+
+  /**
+   * Grumpkin Schnorr attestation for the v3 ZK circuit. Signs the Poseidon2
+   * commitment the circuit recomputes in-circuit (main.nr Step 1) — NOT the
+   * EIP-191 digest used by the ecrecover path above. Returns the 64-byte
+   * `s ‖ e` signature hex that the frontend prover splits into the circuit's
+   * sig_s_lo/hi + sig_e_lo/hi limbs.
+   *
+   * Returns null (with a warning) when ORACLE_SCHNORR_PRIVATE_KEY is not
+   * configured, so the ecrecover attestation path keeps working standalone.
+   */
+  async generateSchnorrAttestation(
+    record: Pick<
+      WebProof,
+      | 'githubId' | 'githubCreatedYear' | 'walletAddressHi' | 'walletAddressLo'
+      | 'commitCount' | 'totalStars' | 'contributionEvents90d'
+    >,
+  ): Promise<string | null> {
+    const rawKey = this.config.get<string>('ORACLE_SCHNORR_PRIVATE_KEY');
+    if (!rawKey) {
+      this.logger.warn(
+        'ORACLE_SCHNORR_PRIVATE_KEY not set — skipping Schnorr attestation; ZK proof generation will not work.',
+      );
+      return null;
+    }
+    const req = (v: string | number | bigint | null | undefined, name: string): bigint => {
+      if (v === null || v === undefined || v === '') {
+        throw new Error(`Cannot build Schnorr attestation: missing ${name}`);
+      }
+      return BigInt(v);
+    };
+    const privateKey = parseSchnorrPrivateKey(rawKey);
+    const message = await computeIdentityCommitment({
+      walletAddressHi:   req(record.walletAddressHi, 'walletAddressHi'),
+      walletAddressLo:   req(record.walletAddressLo, 'walletAddressLo'),
+      githubId:          req(record.githubId, 'githubId'),
+      githubCreatedYear: req(record.githubCreatedYear, 'githubCreatedYear'),
+      commits:           req(record.commitCount ?? 0, 'commitCount'),
+      stars:             req(record.totalStars ?? 0, 'totalStars'),
+      events:            req(record.contributionEvents90d ?? 0, 'contributionEvents90d'),
+    });
+    return signIdentityCommitment(privateKey, message);
   }
 
   // ── GitHub API helper ──────────────────────────────────────────────────────

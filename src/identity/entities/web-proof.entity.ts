@@ -118,6 +118,11 @@ export class WebProof {
   @Column({ name: 'message_hash', nullable: true, type: 'varchar', length: 66 })
   messageHash: string | null;
 
+  // 64-byte Grumpkin Schnorr signature (s ‖ e) over the Poseidon2 identity
+  // commitment — consumed by the frontend ZK prover (v3 circuit).
+  @Column({ name: 'oracle_schnorr_signature', nullable: true, type: 'varchar', length: 130 })
+  oracleSchnorrSignature: string | null;
+
   // ── OAuth token (never persisted — see M4 fix in identity.service.ts) ──────
   // Column is kept for schema compatibility but the service never writes to it.
   // The token is used in-memory and discarded immediately after signing.

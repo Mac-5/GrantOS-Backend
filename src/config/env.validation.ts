@@ -74,6 +74,13 @@ class EnvironmentVariables {
   @IsOptional()
   ARBITRUM_RPC_URL: string;
 
+  // ── AI Verifier (Claude) ───────────────────────────────────────────────────
+  // Optional: when unset, AI milestone verification is disabled and the app
+  // falls back to client-supplied verdicts.
+  @IsString()
+  @IsOptional()
+  ANTHROPIC_API_KEY: string;
+
   // ── CORS ───────────────────────────────────────────────────────────────────
   @IsString()
   FRONTEND_URL: string;

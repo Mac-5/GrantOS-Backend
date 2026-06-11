@@ -85,6 +85,12 @@ export class AttestationResponseDto {
   @ApiPropertyOptional({ example: '0xabcdef...' })
   oracleSignature?: string | null;
 
+  @ApiPropertyOptional({
+    example: '0xabcdef...',
+    description: '64-byte Grumpkin Schnorr signature (s ‖ e) for the v3 ZK circuit',
+  })
+  oracleSchnorrSignature?: string | null;
+
   @ApiPropertyOptional({ example: '0xdeadbeef...' })
   messageHash?: string | null;
 
@@ -184,6 +190,12 @@ export class VerificationStatusDto {
 
   @ApiPropertyOptional({ example: '0xabcdef...' })
   oracleSignature?: string | null;
+
+  @ApiPropertyOptional({
+    example: '0xabcdef...',
+    description: '64-byte Grumpkin Schnorr signature (s ‖ e) for the v3 ZK circuit',
+  })
+  oracleSchnorrSignature?: string | null;
 
   @ApiPropertyOptional({ example: '0xdeadbeef...' })
   messageHash?: string | null;

@@ -19,6 +19,7 @@ import {
 import { IdentityService } from '../identity/identity.service';
 import { GrantService } from './grant.service';
 import { GrantEventService } from './grant-event.service';
+import { AiVerifierService } from './ai-verifier.service';
 
 /** USDC is stored on-chain (and mirrored here) in 6-decimal base units. */
 const USDC_DECIMALS = 6;
@@ -33,6 +34,7 @@ export class MilestoneSubmissionService {
     private readonly identityService: IdentityService,
     private readonly grantService: GrantService,
     private readonly grantEventService: GrantEventService,
+    private readonly aiVerifierService: AiVerifierService,
   ) {}
 
   /**
@@ -150,8 +152,13 @@ export class MilestoneSubmissionService {
       proofHash: dto.proofHash ?? null,
       zkVerified, // server-derived, not client-supplied
       easAttestationUid: dto.easAttestationUid ?? null,
-      aiVerdict: dto.aiVerdict ?? null,
-      aiExplanation: dto.aiExplanation ?? null,
+      // AI verdict is server-derived (see runAiVerification below). The
+      // client-supplied values are only kept as a fallback when the verifier
+      // is not configured on this host.
+      aiVerdict: this.aiVerifierService.enabled ? null : (dto.aiVerdict ?? null),
+      aiExplanation: this.aiVerifierService.enabled
+        ? null
+        : (dto.aiExplanation ?? null),
       submissionTxHash: dto.submissionTxHash ?? null,
       status: SubmissionStatus.SUBMITTED,
       approvalCount: 0,
@@ -188,7 +195,53 @@ export class MilestoneSubmissionService {
       );
     }
 
+    // Best-effort: run the AI verifier in the background so the submit
+    // response stays fast. The verdict lands on the record when ready.
+    void this.runAiVerification(saved);
+
     return saved;
+  }
+
+  /**
+   * Server-authoritative AI verification. Like notifications, this is
+   * best-effort: any failure leaves the verdict null and never affects the
+   * stored submission.
+   */
+  private async runAiVerification(
+    submission: MilestoneSubmission,
+  ): Promise<void> {
+    if (!this.aiVerifierService.enabled) return;
+
+    const ctx = await this.resolveGrantContext(
+      submission.grantId,
+      submission.milestoneIndex,
+    );
+
+    const result = await this.aiVerifierService.verifyMilestone({
+      grantId: submission.grantId,
+      milestoneIndex: submission.milestoneIndex,
+      milestoneTitle: ctx?.title ?? `Milestone ${submission.milestoneIndex + 1}`,
+      milestoneAmountUsdc: ctx?.amountUsdc ?? 'unknown',
+      builderSummary: submission.builderSummary,
+      prUrl: submission.prUrl,
+      githubRepo: submission.githubRepo,
+      prNumber: submission.prNumber,
+      zkRequired: submission.isZkRequired,
+      zkVerified: submission.zkVerified,
+    });
+    if (!result) return;
+
+    try {
+      await this.repo.update(submission.id, {
+        aiVerdict: result.verdict,
+        aiExplanation: result.explanation,
+      });
+    } catch (err) {
+      this.logger.error(
+        `Failed to persist AI verdict: submission=${submission.id} ` +
+          `reason=${(err as Error).message}`,
+      );
+    }
   }
 
   // ── Record a committee vote ─────────────────────────────────────────────
