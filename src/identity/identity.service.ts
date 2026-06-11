@@ -366,6 +366,7 @@ export class IdentityService {
     return {
       requestId:        record.requestId,
       oracleSignature:  record.oracleSignature,
+      oracleSchnorrSignature: record.oracleSchnorrSignature,
       messageHash:      record.messageHash,
       status:           record.status,
       githubLogin:      record.githubLogin,
