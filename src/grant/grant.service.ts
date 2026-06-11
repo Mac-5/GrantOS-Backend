@@ -1,5 +1,5 @@
 // src/grant/grant.service.ts
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Grant } from './entities/grant.entity';
@@ -10,6 +10,8 @@ import { MilestoneWarning } from './entities/milestone-warning.entity';
 
 @Injectable()
 export class GrantService {
+  private readonly logger = new Logger(GrantService.name);
+
   constructor(
     @InjectRepository(Grant)
     private readonly repo: Repository<Grant>,
@@ -45,6 +47,12 @@ export class GrantService {
     return grant;
   }
 
+  async findByEscrowAddress(escrowAddress: string): Promise<Grant | null> {
+    return this.repo.findOne({
+      where: { escrowAddress: escrowAddress.toLowerCase() },
+    });
+  }
+
   async findByGrantee(address: string): Promise<Grant[]> {
     return this.repo.find({
       where: { granteeAddress: address.toLowerCase() },
@@ -53,11 +61,25 @@ export class GrantService {
   }
 
   async findByCommitteeAddress(address: string): Promise<Grant[]> {
-    return this.repo
+    const grants = await this.repo
       .createQueryBuilder('grant')
       .where('grant.committee ILIKE :address', { address: `%${address.toLowerCase()}%` })
       .orderBy('grant.createdAt', 'DESC')
       .getMany();
+
+    // Debug: committee visibility filtering. If this logs 0 grants for a wallet
+    // that is a committee member on-chain, the grant was never indexed into the
+    // `grants` table (indexing is frontend-driven via POST /grants — there is no
+    // backend chain listener). Backfill with `scripts/backfill-grants.ts`.
+    const totalIndexed = await this.repo.count();
+    this.logger.debug(
+      `[committee] findByCommitteeAddress(${address}) → matched ${grants.length} of ${totalIndexed} indexed grant(s): ` +
+        JSON.stringify(
+          grants.map((g) => ({ onChainId: g.onChainId, committee: g.committee })),
+        ),
+    );
+
+    return grants;
   }
 
   async findAll(): Promise<Grant[]> {

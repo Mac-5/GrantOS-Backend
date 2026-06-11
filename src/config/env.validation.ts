@@ -74,6 +74,13 @@ class EnvironmentVariables {
   @IsOptional()
   ARBITRUM_RPC_URL: string;
 
+  // GrantFactory contract address. When set (with ARBITRUM_RPC_URL), the
+  // backend self-heals: it reconciles missed grants on startup and indexes new
+  // GrantCreated events live. When unset, grants are indexed only via POST /grants.
+  @IsString()
+  @IsOptional()
+  GRANT_FACTORY_ADDRESS: string;
+
   // ── AI Verifier (Claude) ───────────────────────────────────────────────────
   // Optional: when unset, AI milestone verification is disabled and the app
   // falls back to client-supplied verdicts.
