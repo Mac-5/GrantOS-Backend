@@ -131,6 +131,15 @@ function addressToLimbs(address: string): { hi: bigint; lo: bigint } {
   return { hi, lo };
 }
 
+/** EVM addresses are case-insensitive (lowercased for storage); Stellar G… addresses are case-sensitive. */
+function isEvmAddress(address: string): boolean {
+  return /^0x[a-fA-F0-9]{40}$/.test(address);
+}
+
+function normalizeWalletAddress(address: string): string {
+  return isEvmAddress(address) ? address.toLowerCase() : address;
+}
+
 // Domain separator — MUST equal OracleAttestationVerifier.DOMAIN on-chain
 // (keccak256("GrantOS:OracleAttestation:v1") == 0x1b87d5de...).
 const ATTESTATION_DOMAIN = ethers.id('GrantOS:OracleAttestation:v1');
@@ -154,7 +163,8 @@ export class IdentityService {
   // ── 1. Init ────────────────────────────────────────────────────────────────
 
   async initVerification(requestId: string, walletAddress: string): Promise<void> {
-    const normalized = walletAddress.toLowerCase();
+    const normalized = normalizeWalletAddress(walletAddress);
+    const chain = isEvmAddress(normalized) ? 'evm' : 'stellar';
 
     const verified = await this.webProofRepo.findOne({
       where: { walletAddress: normalized, status: ProofStatus.VERIFIED },
@@ -168,21 +178,24 @@ export class IdentityService {
 
     // C3 FIX: compute and persist address limbs immediately so they are
     // available throughout the session (they are included in the signed payload).
-    const { hi, lo } = addressToLimbs(normalized);
+    // Limbs are only meaningful for the EVM on-chain replay-binding — the
+    // Stellar submission path (handleSubmitOnStellar) doesn't use them.
+    const limbs = chain === 'evm' ? addressToLimbs(normalized) : null;
 
     await this.webProofRepo.upsert(
       {
         requestId,
         walletAddress:   normalized,
-        walletAddressHi: hi.toString(),
-        walletAddressLo: lo.toString(),
+        walletAddressHi: limbs ? limbs.hi.toString() : null,
+        walletAddressLo: limbs ? limbs.lo.toString() : null,
+        chain,
         status:          ProofStatus.PENDING,
         errorMessage:    null,
       },
       { conflictPaths: ['requestId'] },
     );
 
-    this.logger.log(`Initiated verification wallet=${normalized} requestId=${requestId}`);
+    this.logger.log(`Initiated verification wallet=${normalized} chain=${chain} requestId=${requestId}`);
   }
 
   // ── 2. OAuth URL ───────────────────────────────────────────────────────────
@@ -255,6 +268,33 @@ export class IdentityService {
       const data = await this.fetchGitHubData(accessToken);
       this.logger.log(`Fetched GitHub data for requestId=${state} login=${data.login}`);
 
+      // ── Cross-chain Sybil guardrail ──────────────────────────────────────
+      // A GitHub account may be verified on AT MOST ONE chain. If this github_id
+      // is already VERIFIED (on any chain) by a different wallet, refuse to issue
+      // a new oracle attestation. The Schnorr attestation is the in-circuit
+      // secret required to make a valid proof, so withholding it makes a
+      // second-chain verification cryptographically impossible — not just
+      // policy-blocked.
+      const priorGithub = await this.findVerifiedByGithubId(data.githubId);
+      const currentWallet =
+        (await this.webProofRepo.findOne({ where: { requestId: state } }))?.walletAddress ?? null;
+      if (priorGithub && priorGithub.walletAddress !== currentWallet) {
+        const reason =
+          `GitHub @${data.login} is already verified on the ${priorGithub.chain} chain ` +
+          `(wallet ${priorGithub.walletAddress}). A GitHub account can verify on only one chain.`;
+        await this.webProofRepo.update(
+          { requestId: state },
+          {
+            status: ProofStatus.FAILED,
+            errorMessage: reason,
+            githubId: data.githubId,
+            githubLogin: data.login,
+          },
+        );
+        this.logger.warn(`Blocked cross-chain re-verification requestId=${state}: ${reason}`);
+        return `${frontendUrl}/verify/success?requestId=${state}`;
+      }
+
       await this.webProofRepo.update(
         { requestId: state },
         {
@@ -278,6 +318,20 @@ export class IdentityService {
 
       // Reload to get walletAddressHi / walletAddressLo (set during init)
       const fresh = await this.webProofRepo.findOneOrFail({ where: { requestId: state } });
+
+      if (fresh.chain === 'stellar') {
+        // Stellar identity proofs are verified on-chain by the Soroban UltraHonk
+        // verifier (GrantOS-Soroban), not via this EVM oracle ecrecover signature
+        // — walletAddressHi/Lo (and therefore the signed payload) don't exist for
+        // a Stellar G… address. The GitHub profile data fetched above is all this
+        // path needs; mark attested so the frontend polling loop can proceed.
+        await this.webProofRepo.update(
+          { requestId: state },
+          { status: ProofStatus.ATTESTED },
+        );
+        this.logger.log(`GitHub data fetched for Stellar session requestId=${state}`);
+        return `${frontendUrl}/verify/success?requestId=${state}`;
+      }
 
       const { signature, digest } = await this.generateAttestation(fresh);
       const schnorrSignature = await this.generateSchnorrAttestation(fresh);
@@ -349,7 +403,7 @@ export class IdentityService {
 
   async getAttestationByWallet(walletAddress: string): Promise<AttestationResponseDto> {
     const record = await this.webProofRepo.findOne({
-      where: { walletAddress: walletAddress.toLowerCase() },
+      where: { walletAddress: normalizeWalletAddress(walletAddress) },
       order: { createdAt: 'DESC' },
     });
     if (!record) {
@@ -391,12 +445,42 @@ export class IdentityService {
 
   // ── 5. Confirm on-chain tx ─────────────────────────────────────────────────
 
-  async markVerified(requestId: string, txHash: string): Promise<void> {
+  async markVerified(requestId: string, txHash: string, chain: string = 'evm'): Promise<void> {
     const record = await this.webProofRepo.findOne({ where: { requestId } });
     if (!record) throw new NotFoundException(`No record for requestId=${requestId}`);
 
-    await this.webProofRepo.update({ requestId }, { status: ProofStatus.VERIFIED, txHash });
-    this.logger.log(`Verified requestId=${requestId} wallet=${record.walletAddress} tx=${txHash}`);
+    // Defense-in-depth: re-assert the cross-chain GitHub guardrail at confirm
+    // time, in case a record was attested before another chain's verification
+    // landed.
+    if (record.githubId != null) {
+      const prior = await this.findVerifiedByGithubId(record.githubId);
+      if (prior && prior.requestId !== requestId && prior.walletAddress !== record.walletAddress) {
+        throw new ConflictException(
+          `GitHub id ${record.githubId} is already verified on the ${prior.chain} chain.`,
+        );
+      }
+    }
+
+    await this.webProofRepo.update({ requestId }, { status: ProofStatus.VERIFIED, txHash, chain });
+    this.logger.log(`Verified requestId=${requestId} wallet=${record.walletAddress} chain=${chain} tx=${txHash}`);
+  }
+
+  /** First VERIFIED record for a github id, across all chains (the nullifier). */
+  async findVerifiedByGithubId(githubId: number | null | undefined): Promise<WebProof | null> {
+    if (githubId === null || githubId === undefined) return null;
+    return this.webProofRepo.findOne({
+      where: { githubId, status: ProofStatus.VERIFIED },
+    });
+  }
+
+  /** Cross-chain check used by the frontend before letting a user verify. */
+  async isGithubVerified(
+    githubId: number,
+  ): Promise<{ verified: boolean; chain?: string; wallet?: string }> {
+    const r = await this.findVerifiedByGithubId(githubId);
+    return r
+      ? { verified: true, chain: r.chain, wallet: r.walletAddress ?? undefined }
+      : { verified: false };
   }
 
   // ── 6. Status ──────────────────────────────────────────────────────────────
@@ -427,7 +511,7 @@ export class IdentityService {
 
   async isWalletVerified(address: string): Promise<{ verified: boolean }> {
     const record = await this.webProofRepo.findOne({
-      where: { walletAddress: address.toLowerCase(), status: ProofStatus.VERIFIED },
+      where: { walletAddress: normalizeWalletAddress(address), status: ProofStatus.VERIFIED },
     });
     return { verified: !!record };
   }

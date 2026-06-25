@@ -41,9 +41,9 @@ export class WebProof {
   @Column({ name: 'request_id' })
   requestId: string;
 
-  // Ethereum wallet that initiated verification.
+  // Wallet that initiated verification — EVM 0x… (42 chars) or Stellar G… (56 chars).
   @Index()
-  @Column({ name: 'wallet_address', nullable: true, type: 'varchar', length: 42 })
+  @Column({ name: 'wallet_address', nullable: true, type: 'varchar', length: 56 })
   walletAddress: string | null;
 
   // ── Wallet address limbs (signed by oracle, needed for proof generation) ───
@@ -128,6 +128,13 @@ export class WebProof {
   // The token is used in-memory and discarded immediately after signing.
   @Column({ name: 'oauth_access_token', nullable: true, type: 'text' })
   oauthAccessToken: string | null;
+
+  // Which chain this identity was (or is being) verified on. Used for the
+  // cross-chain Sybil guardrail: a GitHub id verified on ANY chain cannot be
+  // re-verified on another. 'evm' | 'stellar'.
+  @Index()
+  @Column({ name: 'chain', type: 'varchar', length: 16, default: 'evm' })
+  chain: string;
 
   // ── Status ─────────────────────────────────────────────────────────────────
   @Column({ type: 'enum', enum: ProofStatus, default: ProofStatus.PENDING })

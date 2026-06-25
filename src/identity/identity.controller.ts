@@ -179,8 +179,25 @@ export class IdentityController {
     @Param('requestId', ParseUUIDPipe) requestId: string,
     @Body() dto: ConfirmTxDto,
   ): Promise<ConfirmResponseDto> {
-    await this.identityService.markVerified(requestId, dto.txHash);
+    await this.identityService.markVerified(requestId, dto.txHash, dto.chain ?? 'evm');
     return { success: true, txHash: dto.txHash };
+  }
+
+  // ── GET /identity/github/:githubId/verified ───────────────────────────────
+
+  @Get('identity/github/:githubId/verified')
+  @ApiOperation({
+    summary: 'Cross-chain check: is this GitHub account already verified anywhere?',
+    description:
+      'Returns { verified, chain, wallet } so the frontend can block a GitHub ' +
+      'account that is already verified on another chain (Sybil guardrail).',
+  })
+  @ApiParam({ name: 'githubId', description: 'GitHub numeric user id' })
+  @ApiResponse({ status: 200, schema: { example: { verified: true, chain: 'evm' } } })
+  async isGithubVerified(
+    @Param('githubId') githubId: string,
+  ): Promise<{ verified: boolean; chain?: string; wallet?: string }> {
+    return this.identityService.isGithubVerified(Number(githubId));
   }
 
   // ── GET /identity/status/:requestId ──────────────────────────────────────

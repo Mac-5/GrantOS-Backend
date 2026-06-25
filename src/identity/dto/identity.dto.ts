@@ -9,7 +9,6 @@
 
 import {
   IsArray,
-  IsEthereumAddress,
   IsOptional,
   IsString,
   IsUUID,
@@ -29,23 +28,38 @@ export class InitVerificationDto {
   requestId?: string;
 
   @ApiProperty({
-    description: 'Ethereum wallet address initiating verification',
+    description: 'Wallet address initiating verification (EVM 0x… or Stellar G…)',
     example: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
   })
-  @IsEthereumAddress()
+  @IsString()
+  @Matches(/^(0x[a-fA-F0-9]{40}|G[A-Z2-7]{55})$/, {
+    message: 'walletAddress must be an EVM 0x-address or a Stellar G-address',
+  })
   walletAddress: string;
 }
 
 export class ConfirmTxDto {
   @ApiProperty({
-    description: 'On-chain transaction hash after proof submission',
+    description: 'On-chain transaction hash after proof submission (EVM 0x… or Stellar 64-hex / contract id)',
     example: '0xabc123...',
   })
   @IsString()
-  @Matches(/^0x[a-fA-F0-9]{64}$/, {
-    message: 'txHash must be a valid 32-byte hex string prefixed with 0x',
+  // Accept an EVM tx hash (0x + 64 hex), a Stellar tx hash (64 hex), or a
+  // Stellar contract/account id (C…/G… base32, 56 chars).
+  @Matches(/^(0x)?[a-fA-F0-9]{64}$|^[A-Z2-7]{56}$/, {
+    message: 'txHash must be an EVM 0x-hash, a Stellar tx hash, or a Stellar contract id',
   })
   txHash: string;
+
+  @ApiProperty({
+    description: 'Chain the verification landed on',
+    enum: ['evm', 'stellar'],
+    required: false,
+    default: 'evm',
+  })
+  @IsOptional()
+  @IsString()
+  chain?: 'evm' | 'stellar';
 }
 
 export class VerifyZkProofDto {
