@@ -747,8 +747,20 @@ export class IdentityService {
    * a 32-byte word. The tier name is mapped to its numeric id (0..3).
    */
   buildPublicInputs(
-    record: Pick<WebProof, 'contributionTier' | 'githubId' | 'githubCreatedYear' | 'walletAddressHi' | 'walletAddressLo'>,
-  ): string[] {
+    record: Pick<WebProof, 'contributionTier' | 'githubId' | 'githubCreatedYear' | 'walletAddressHi' | 'walletAddressLo' | 'walletAddress' | 'chain'>,
+  ): string[] | null {
+    // Stellar sessions have no EVM address limbs — publicInputs is an EVM-only concept.
+    if (record.chain === 'stellar') return null;
+
+    // Recompute limbs for old pre-C3 rows that have null hi/lo but a valid walletAddress.
+    let hi: string | null | undefined = record.walletAddressHi;
+    let lo: string | null | undefined = record.walletAddressLo;
+    if ((!hi || !lo) && record.walletAddress && isEvmAddress(record.walletAddress)) {
+      const limbs = addressToLimbs(record.walletAddress);
+      hi = limbs.hi.toString();
+      lo = limbs.lo.toString();
+    }
+
     const tierId = TIER_ID[(record.contributionTier ?? 'Member') as string] ?? 0;
     const req = (v: string | number | bigint | null | undefined, name: string): bigint => {
       if (v === null || v === undefined || v === '') {
@@ -761,8 +773,8 @@ export class IdentityService {
       b32(BigInt(tierId)),
       b32(req(record.githubId, 'githubId')),
       b32(req(record.githubCreatedYear, 'githubCreatedYear')),
-      b32(req(record.walletAddressHi, 'walletAddressHi')),
-      b32(req(record.walletAddressLo, 'walletAddressLo')),
+      b32(req(hi, 'walletAddressHi')),
+      b32(req(lo, 'walletAddressLo')),
     ];
   }
 
@@ -776,10 +788,11 @@ export class IdentityService {
    * proof generation is required any more — verification is a native ecrecover.
    */
   async generateAttestation(
-    record: Pick<WebProof, 'contributionTier' | 'githubId' | 'githubCreatedYear' | 'walletAddressHi' | 'walletAddressLo'>,
+    record: Pick<WebProof, 'contributionTier' | 'githubId' | 'githubCreatedYear' | 'walletAddressHi' | 'walletAddressLo' | 'walletAddress' | 'chain'>,
   ): Promise<{ signature: string; publicInputs: string[]; digest: string }> {
     const privateKey   = this.config.getOrThrow<string>('ORACLE_PRIVATE_KEY');
     const publicInputs = this.buildPublicInputs(record);
+    if (!publicInputs) throw new Error('generateAttestation called for non-EVM session');
 
     const inner = ethers.keccak256(
       new ethers.AbiCoder().encode(
