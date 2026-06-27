@@ -161,7 +161,7 @@ export class AttestationResponseDto {
   // 32-byte words. The frontend passes `oracleSignature` as `proof` and this
   // array as `publicInputs` to verifyIdentity — no ZK proving required.
   @ApiPropertyOptional({ type: [String] })
-  publicInputs?: string[];
+  publicInputs?: string[] | null;
 
   // Private ZK witnesses — retained for backwards compatibility / analytics.
   // No longer required by the frontend (verification is now a native ecrecover).
