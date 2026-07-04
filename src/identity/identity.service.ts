@@ -131,6 +131,20 @@ function addressToLimbs(address: string): { hi: bigint; lo: bigint } {
   return { hi, lo };
 }
 
+/**
+ * Stellar G… addresses decode to a 32-byte ed25519 key, which doesn't fit the
+ * circuit's 20-byte (4-byte hi / 16-byte lo) wallet commitment — and the
+ * on-chain GrantIdentityRegistry.verify_identity doesn't bind wallet_hi/lo to
+ * the caller for Stellar anyway (documented gap: ownership is bound to the
+ * authenticated `caller` Address instead). So any deterministic 20-byte
+ * derivation of the address is fine here; hash it into the same limb shape
+ * used for EVM so the Schnorr attestation ties to *this* wallet string.
+ */
+function stellarAddressToLimbs(address: string): { hi: bigint; lo: bigint } {
+  const hash = ethers.keccak256(ethers.toUtf8Bytes(address));
+  return addressToLimbs('0x' + hash.slice(-40));
+}
+
 /** EVM addresses are case-insensitive (lowercased for storage); Stellar G… addresses are case-sensitive. */
 function isEvmAddress(address: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(address);
@@ -177,17 +191,17 @@ export class IdentityService {
     }
 
     // C3 FIX: compute and persist address limbs immediately so they are
-    // available throughout the session (they are included in the signed payload).
-    // Limbs are only meaningful for the EVM on-chain replay-binding — the
-    // Stellar submission path (handleSubmitOnStellar) doesn't use them.
-    const limbs = chain === 'evm' ? addressToLimbs(normalized) : null;
+    // available throughout the session (they are included in the signed
+    // payload / Schnorr attestation for both chains — see stellarAddressToLimbs
+    // for why the Stellar derivation doesn't need to be the literal address bytes).
+    const limbs = chain === 'evm' ? addressToLimbs(normalized) : stellarAddressToLimbs(normalized);
 
     await this.webProofRepo.upsert(
       {
         requestId,
         walletAddress:   normalized,
-        walletAddressHi: limbs ? limbs.hi.toString() : null,
-        walletAddressLo: limbs ? limbs.lo.toString() : null,
+        walletAddressHi: limbs.hi.toString(),
+        walletAddressLo: limbs.lo.toString(),
         chain,
         status:          ProofStatus.PENDING,
         errorMessage:    null,
@@ -321,15 +335,17 @@ export class IdentityService {
 
       if (fresh.chain === 'stellar') {
         // Stellar identity proofs are verified on-chain by the Soroban UltraHonk
-        // verifier (GrantOS-Soroban), not via this EVM oracle ecrecover signature
-        // — walletAddressHi/Lo (and therefore the signed payload) don't exist for
-        // a Stellar G… address. The GitHub profile data fetched above is all this
-        // path needs; mark attested so the frontend polling loop can proceed.
+        // verifier (GrantOS-Soroban), not via the EVM oracle ecrecover signature —
+        // so oracleSignature is never set for this chain. The frontend still needs
+        // the Grumpkin Schnorr signature to build the v3 ZK proof it submits to
+        // the Soroban verifier, so generate that here (walletAddressHi/Lo were
+        // populated at init via stellarAddressToLimbs).
+        const schnorrSignature = await this.generateSchnorrAttestation(fresh);
         await this.webProofRepo.update(
           { requestId: state },
-          { status: ProofStatus.ATTESTED },
+          { status: ProofStatus.ATTESTED, oracleSchnorrSignature: schnorrSignature },
         );
-        this.logger.log(`GitHub data fetched for Stellar session requestId=${state}`);
+        this.logger.log(`GitHub data fetched + Schnorr attestation generated for Stellar session requestId=${state}`);
         return `${frontendUrl}/verify/success?requestId=${state}`;
       }
 
